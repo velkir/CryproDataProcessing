@@ -4,8 +4,6 @@ from sqlalchemy import text
 import requests
 import json
 import ccxt
-import datetime
-
 
 class CryptoDataProcessor:
     def __init__(self, dbName):
@@ -125,8 +123,9 @@ class Asset:
                 assetsDfAllColumns = pd.DataFrame(json.loads(request.content)["data"])
                 assetsDfAllColumns.rename(columns={"name": "assetName", "cmcUniqueId": "cmcId", "tags": "tag"}, inplace=True)
                 if assetHistory:
+                    assetsDfAllColumns["timestamp"]=pd.Timestamp.now(tz="utc")
                     return assetsDfAllColumns[
-                        ["assetName", "cmcId", "marketcap", "circulatingSupply", "maxSupply", "totalSupply"]]
+                        ["assetName", "timestamp", "cmcId", "marketcap", "circulatingSupply", "maxSupply", "totalSupply"]]
                 else:
                     return assetsDfAllColumns[["assetName", "cmcId", "tag"]]
 
@@ -173,6 +172,76 @@ class AssetTag:
         query += params
         return self.dataProcessor._select_query(query)
 
+class AssetGroup:
+    def __init__(self, dataProcessor):
+        self.dataProcessor = dataProcessor
+
+    def addAssetGroup(self, assetGroupName):
+        query = f"INSERT INTO AssetGroup (assetGroupName) VALUES ('{assetGroupName}');"
+        return self.dataProcessor._basic_query(query=query)
+
+    def deleteAssetGroup(self, assetGroupName):
+        query = f"DELETE FROM AssetGroup WHERE assetGroupName = '{assetGroupName}';"
+        return self.dataProcessor._basic_query(query=query)
+
+    def renameAssetGroup(self, oldAssetGroupName, newAssetGroupName):
+        query = f"UPDATE AssetGroup SET assetGroupName = '{newAssetGroupName}' WHERE assetGroupName = '{oldAssetGroupName}';"
+        return self.dataProcessor._basic_query(query=query)
+
+    def getAllAssetGroups(self):
+        query = f"SELECT * FROM AssetGroup;"
+        return self.dataProcessor._select_pandas_query(query=query)
+
+    def addAssetsToAssetGroup(self, assetGroupName, assetsList):
+        assetGroupId = self._getAssetGroupId(assetGroupName)
+        addedAssetsCount = 0
+        for asset in assetsList:
+            query = f"INSERT INTO AssetGroupLinkTable (assetGroupId, assetName) VALUES ({assetGroupId}, '{asset}');"
+            success = self.dataProcessor._basic_query(query=query)
+            if success:
+                addedAssetsCount += success
+        return addedAssetsCount
+
+    def deleteAssetsFromAssetGroup(self, assetGroupName, assetsList):
+        assetGroupId = self._getAssetGroupId(assetGroupName)
+        deletedAssetsCount = 0
+        for asset in assetsList:
+            query = f"DELETE FROM AssetGroupLinkTable WHERE (assetGroupId={assetGroupId} AND assetName='{asset}');"
+            success = self.dataProcessor._basic_query(query=query)
+            if success:
+                deletedAssetsCount += success
+        return deletedAssetsCount
+
+    def getAssetsFromAssetGroup(self, assetGroupName):
+        assetGroupId = self._getAssetGroupId(assetGroupName)
+        query = f"SELECT assetName FROM assetGroupLinkTable WHERE assetGroupId = {assetGroupId};"
+        return self.dataProcessor._select_pandas_query(query=query)
+
+    def _getAssetGroupId(self, assetGroupName):
+        query = f"SELECT assetGroupId FROM AssetGroup WHERE assetGroupName = '{assetGroupName}';"
+        return self.dataProcessor._basic_query(query=query, queryType="select")[0][0]
+
+class AssetHistory:
+    def __init__(self, dataProcessor):
+        self.dataProcessor = dataProcessor
+
+    def addAssetsHistoryRecords(self):
+        #перепроверить после добавления vpn
+        df = self.dataProcessor.asset._getAssetsFromExchange(assetHistory=True)
+        return self.dataProcessor._modify_query_pandas(df, "AssetHistoryRecords")
+
+    def getAssetHistoryRecords(self, assetName, fromDatetime=None):
+        base_query = f"SELECT * FROM AssetHistory WHERE assetName = '{assetName}'"
+        if fromDatetime:
+            params = f" AND Timestamp >= '{fromDatetime}';"
+        else:
+           params = ";"
+        query = base_query + params
+        result = self.dataProcessor._select_pandas_query(query=query)
+        if len(result) > 0:
+            return result
+        else:
+            return None
 
 class Ticker:
     def __init__(self, dataProcessor):
@@ -208,7 +277,7 @@ class Ticker:
     def getTickersFromExchange(self, exchangeName="Binance", whiteListedQuoteAssets=True):
         if exchangeName == "Binance":
             df_all_tickers = pd.DataFrame(self.dataProcessor.ccxtBinance.fetchMarkets())
-            # отфильтровываю не бесконечные фьючи и обратные фьючи (где маржа - актив)
+            # отфильтровываю фьючи c экспирацией и обратные фьючи (где маржа - актив)
             df_spot_futures = df_all_tickers[((df_all_tickers["type"] == "spot") | (
                     (df_all_tickers["type"] == "swap") & df_all_tickers["linear"] == True)) & (
                                                          df_all_tickers["active"] == True)]
@@ -237,11 +306,79 @@ class Ticker:
         return self.dataProcessor._modify_query_pandas(dfNewTickers, "Ticker", if_exists='append', index=False,
                                                        method="multi", chunksize=1)
 
+class TickerGroup:
+    def __init__(self, dataProcessor):
+        self.dataProcessor = dataProcessor
+
+    def addTickerGroup(self, tickerGroupName):
+        query = f"INSERT INTO TickerGroup (tickerGroupName) VALUES '{tickerGroupName}';"
+        return self.dataProcessor._basic_query(query=query)
+
+    def deleteTickerGroup(self, tickerGroupName):
+        query = f"DELETE FROM TickerGroup WHERE tickerGroupName = '{tickerGroupName}';"
+        return self.dataProcessor._basic_query(query=query)
+
+    def renameTickerGroup(self, oldTickerGroupName, newTickerGroupName):
+        query = f"UPDATE TickerGroup SET tickerGroupName = '{newTickerGroupName}' WHERE assetGroupName = '{oldTickerGroupName}';"
+        return self.dataProcessor._basic_query(query=query)
+
+    def getAllTickerGroups(self):
+        query = f"SELECT * FROM TickerGroup;"
+        return self.dataProcessor._select_pandas_query(query=query)
+
+    def addTickersToTickerGroup(self, tickerGroupName, symbolIds):
+        tickerGroupId = self._getTickerGroupId(tickerGroupName)
+        addedTickersCount = 0
+        for symbolId in symbolIds:
+            query = f"INSERT INTO TickerGroupLinkTable (tickerGroupId, symbolId) VALUES ({tickerGroupId}, {symbolId});"
+            success = self.dataProcessor._basic_query(query=query)
+            if success:
+                addedTickersCount += success
+        return addedTickersCount
+
+    def deleteTickersToTickerGroup(self, tickerGroupName, symbolIds):
+        tickerGroupId = self._getTickerGroupId(tickerGroupName)
+        deletedTickersCount = 0
+        for symbolId in symbolIds:
+            query = f"DELETE FROM TickerGroupLinkTable WHERE (tickerGroupId = {tickerGroupId} AND symbolId={symbolId});"
+            success = self.dataProcessor._basic_query(query=query)
+            if success:
+                deletedTickersCount += success
+        return deletedTickersCount
+
+    def getTickersFromTickerGroup(self, tickerGroupName):
+        tickerGroupId = self._getTickerGroupId(tickerGroupName)
+        query = f"SELECT symbolId FROM TickerGroupLinkTable WHERE tickerGroupId={tickerGroupId};"
+        return self.dataProcessor._select_pandas_query(query=query)
+
+    def _getTickerGroupId(self, tickerGroupName):
+        query = f"SELECT tickerGroupId FROM TickerGroup WHERE tickerGroupName = '{tickerGroupName}';"
+        return self.dataProcessor._basic_query(query=query, queryType="select")[0][0]
 
 pd.set_option("display.max_rows", 150)
 pd.set_option("display.max_columns", 150)
 pd.set_option("max_colwidth", 1000)
 dataProcessor = CryptoDataProcessor("test")
-dataProcessor.asset.updateAssets()
-dataProcessor.ticker.updateTickers()
-print()
+
+
+# dataProcessor.asset.updateAssets()
+# dataProcessor.ticker.updateTickers()
+# print()
+
+#AssetGroup
+# dataProcessor.assetGroup.addAssetGroup("Shitcoins")
+# dataProcessor.assetGroup.addAssetGroup("L1")
+# dataProcessor.assetGroup.addAssetGroup("L2")
+# print(dataProcessor.assetGroup.getAllAssetGroups())
+# dataProcessor.assetGroup.deleteAssetGroup("L1")
+# dataProcessor.assetGroup.renameAssetGroup("L2", "L3")
+# print(dataProcessor.assetGroup.getAllAssetGroups())
+# dataProcessor.assetGroup.addAssetsToAssetGroup("Shitcoins", ["DOGE", "SHIB"])
+# dataProcessor.assetGroup.deleteAssetsFromAssetGroup("Shitcoins", ["BTC", "ETH"])
+# print(dataProcessor.assetGroup.getAssetsFromAssetGroup("Shitcoins"))
+# print(dataProcessor.assetHistory.getAssetHistoryRecords("BTC"))
+
+#TickerGroup
+print(dataProcessor.tickerGroup.getAllTickerGroups())
+print(dataProcessor.tickerGroup.getTickersFromTickerGroup("l1"))
+
