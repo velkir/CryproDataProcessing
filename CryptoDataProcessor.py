@@ -1,9 +1,12 @@
+import os
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy import text
 import requests
 import json
 import ccxt
+from playwright.sync_api import sync_playwright
+
 
 class CryptoDataProcessor:
     def __init__(self, dbName):
@@ -119,8 +122,9 @@ class Asset:
     def _getAssetsFromExchange(self, exchangeName="Binance", assetHistory=False):
         try:
             if exchangeName == "Binance":
-                request = requests.get(self.binance_assets_url)
-                assetsDfAllColumns = pd.DataFrame(json.loads(request.content)["data"])
+                # request = requests.get(self.binance_assets_url)
+                request_data = self._makeRequestAssets()
+                assetsDfAllColumns = pd.DataFrame(request_data["data"])
                 assetsDfAllColumns.rename(columns={"name": "assetName", "cmcUniqueId": "cmcId", "tags": "tag"}, inplace=True)
                 if assetHistory:
                     assetsDfAllColumns["timestamp"]=pd.Timestamp.now(tz="utc")
@@ -135,6 +139,20 @@ class Asset:
         except Exception as e:
             print(f"An error occurred: {e}")
 
+    def _makeRequestAssets(self):
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)  # Запускаем браузер в фоновом режиме
+            context = browser.new_context()
+            page = context.new_page()
+            # Переходим на сайт, чтобы получить куки
+            page.goto('https://www.binance.com')
+            # Дожидаемся прохождения проверки Cloudflare
+            page.wait_for_load_state('networkidle')
+            # Выполняем запрос и получаем ответ
+            response = page.request.get(self.binance_assets_url)
+            data = response.json()
+            browser.close()
+            return data
 
     def updateAssets(self, exchangeName="Binance", DBAssets=None, exchangeAssets=None):
         if exchangeAssets is None:
@@ -170,7 +188,7 @@ class AssetTag:
             params = f" WHERE {''.join(['symbol = ' + '\'' + str(asset) + '\' OR ' for asset in assetsList])}"
             params = params[:-4] + ";"
         query += params
-        return self.dataProcessor._select_query(query)
+        return self.dataProcessor._select_pandas_query(query)
 
 class AssetGroup:
     def __init__(self, dataProcessor):
@@ -254,7 +272,15 @@ class Ticker:
             params = f" WHERE {''.join(['symbol = ' + '\'' + str(symbol) + '\' OR ' for symbol in symbolsList])}"
             params = params[:-4] + ";"
         query += params
-        return self.dataProcessor._select_query(query)
+        return self.dataProcessor._select_pandas_query(query)
+
+    def getSymbolId(self, symbol, exchangeName="Binance", spot=True):
+        if spot:
+            isFutures = 0
+        else:
+            isFutures = 1
+        query = f"SELECT symbolId FROM Ticker WHERE symbol='{symbol}' AND exchangeName='{exchangeName}' AND isFutures={isFutures};"
+        return self.dataProcessor._basic_query(query, queryType="select")
 
     def updateTickers(self):
         df_exchange_tickers = self.getTickersFromExchange()
@@ -355,6 +381,37 @@ class TickerGroup:
         query = f"SELECT tickerGroupId FROM TickerGroup WHERE tickerGroupName = '{tickerGroupName}';"
         return self.dataProcessor._basic_query(query=query, queryType="select")[0][0]
 
+class CSVMerger:
+    def __init__(self, dataProcessor):
+        self.dataProcessor = dataProcessor
+
+    def mergePriceOHLCV(self, spotTickers=None, UMFuturesTickers=None, fromDateTime=None, timeframe="1m"):
+        basicPath = os.getcwd()
+        folder = "data/spot/klines"
+        priceOHLCVPath = os.path.join(basicPath, folder)
+        if spotTickers:
+            downloadedSpotTickers = os.listdir(priceOHLCVPath)
+            dfSpotTickersOHLCV = pd.DataFrame(columns=["timeframe",
+                                                       "timestamp",
+                                                       "open",
+                                                       "high",
+                                                       "low",
+                                                       "close",
+                                                       "baseAssetVolume",
+                                                       "quoteAssetVolume",
+                                                       "takerBuyBaseAssetVolume",
+                                                       "takerBuyQuoteAssetVolume",
+                                                       "tradesCount"])
+    #         for spotTicker in spotTickers:
+    #             if spotTicker in downloadedSpotTickers:
+    #                 dfSpotTicker =
+    #
+    # def getSymbolId(self, symbol, spot=True):
+
+
+# 1706745600000, 0.39080000, 0.39200000, 0.38460000, 0.38610000, 585227.20000000, 1706749199999, 227177.86678000, 1846, 237271.30000000, 92108.63556000, 0
+
+
 pd.set_option("display.max_rows", 150)
 pd.set_option("display.max_columns", 150)
 pd.set_option("max_colwidth", 1000)
@@ -362,8 +419,7 @@ dataProcessor = CryptoDataProcessor("test")
 
 
 # dataProcessor.asset.updateAssets()
-# dataProcessor.ticker.updateTickers()
-# print()
+dataProcessor.ticker.updateTickers()
 
 #AssetGroup
 # dataProcessor.assetGroup.addAssetGroup("Shitcoins")
@@ -379,6 +435,6 @@ dataProcessor = CryptoDataProcessor("test")
 # print(dataProcessor.assetHistory.getAssetHistoryRecords("BTC"))
 
 #TickerGroup
-print(dataProcessor.tickerGroup.getAllTickerGroups())
-print(dataProcessor.tickerGroup.getTickersFromTickerGroup("l1"))
+# print(dataProcessor.tickerGroup.getAllTickerGroups())
+# print(dataProcessor.tickerGroup.getTickersFromTickerGroup("l1"))
 

@@ -177,9 +177,19 @@ class BinanceDataDumper:
             queue.put((urls[i], paths[i]))
         return queue
 
-# dumper = BinanceDataDumper(spotTickers=["BTCUSDT", "ETHUSDT"], umFuturesTickers=["BTCUSDT", "ETHUSDT"])
-dumper = BinanceDataDumper(spotTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SHIBUSDT", "PEPEUSDT"],
-                           umFuturesTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT", "1000SHIBUSDT", "1000PEPEUSDT"],
+
+def loadTickersFromFile(path):
+    with open(path, "r") as f:
+        tickers = f.readlines()
+        final_tickers = []
+        # return [ticker.strip("'") for ticker in tickers]
+        for ticker in tickers:
+            final_tickers.append(ticker.strip("'\n"))
+        return final_tickers
+
+spotTickers = loadTickersFromFile("spotTickers.txt")
+
+dumper = BinanceDataDumper(spotTickers=spotTickers,
                            dataTypes=["klines", "fundingRate", "metrics"],
-                           timeframes=["1m"])
+                           timeframes=["1h"])
 linksPaths = dumper.dumpData()
