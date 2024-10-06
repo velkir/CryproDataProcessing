@@ -2,11 +2,13 @@ import os
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy import text
-import requests
-import json
 import ccxt
 from playwright.sync_api import sync_playwright
-
+import numpy as np
+import logging
+import sys
+from queue import Queue
+from threading import Thread
 
 class CryptoDataProcessor:
     def __init__(self, dbName):
@@ -23,7 +25,9 @@ class CryptoDataProcessor:
 
     def _initialize_db_connection(self, dbName):
         connection_string = f"mysql+mysqlconnector://user:1234@localhost:3306/{dbName}"
-        engine = create_engine(connection_string, echo=True)
+        # engine = create_engine(connection_string, echo=True)
+        engine = create_engine(connection_string, echo=False)
+
         return engine
 
     def _basic_query(self, query, queryType="modify", params=None):
@@ -391,7 +395,8 @@ class CSVMerger:
         priceOHLCVPath = os.path.join(basicPath, folder)
         if spotTickers:
             downloadedSpotTickers = os.listdir(priceOHLCVPath)
-            dfSpotTickersOHLCV = pd.DataFrame(columns=["timeframe",
+            dfSpotTickersOHLCV = pd.DataFrame(columns=["symbolId",
+                                                       "timeframe",
                                                        "timestamp",
                                                        "open",
                                                        "high",
@@ -402,24 +407,106 @@ class CSVMerger:
                                                        "takerBuyBaseAssetVolume",
                                                        "takerBuyQuoteAssetVolume",
                                                        "tradesCount"])
-    #         for spotTicker in spotTickers:
-    #             if spotTicker in downloadedSpotTickers:
-    #                 dfSpotTicker =
-    #
-    # def getSymbolId(self, symbol, spot=True):
+            # for spotTicker in spotTickers:
+            queue = Queue()
+            [queue.put(i) for i in spotTickers]
+            numThreads = 20
+            for i in range(numThreads):
+                worker = Thread(target=self._mergeSymbol, args=(queue,
+                                                                downloadedSpotTickers,
+                                                                priceOHLCVPath,
+                                                                fromDateTime,
+                                                                timeframe))
+                worker.start()
+            queue.join()
 
+    def _mergeSymbol(self, queue, downloadedSpotTickers, priceOHLCVPath, fromDateTime=None, timeframe="1m"):
+        while queue.not_empty:
+            try:
+                ticker = queue.get_nowait()
+                if ticker in downloadedSpotTickers:
+                    symbolId = self._getSymbolId(ticker, spot=True)
+                    spotTickerPath = os.path.join(priceOHLCVPath, ticker, timeframe)
+                    spotTickerFiles = [file for file in os.listdir(spotTickerPath) if not file.startswith(".")]
+                    dfSpotTicker = pd.DataFrame(columns=["symbolId",
+                                                         "timeframe",
+                                                         "timestamp",
+                                                         "open",
+                                                         "high",
+                                                         "low",
+                                                         "close",
+                                                         "baseAssetVolume",
+                                                         "quoteAssetVolume",
+                                                         "takerBuyBaseAssetVolume",
+                                                         "takerBuyQuoteAssetVolume",
+                                                         "tradesCount"])
+                    for spotTickerFile in spotTickerFiles:
+                        spotTickerFilePath = os.path.join(spotTickerPath, spotTickerFile)
+                        dfSpotTickerPart = pd.read_csv(spotTickerFilePath,
+                                                       names=["timestamp",
+                                                              "open",
+                                                              "high",
+                                                              "low",
+                                                              "close",
+                                                              "baseAssetVolume",
+                                                              "quoteAssetVolume",
+                                                              "tradesCount",
+                                                              "takerBuyBaseAssetVolume",
+                                                              "takerBuyQuoteAssetVolume"],
+                                                       usecols=[0, 1, 2, 3, 4, 5, 7, 8, 9, 10])
+                        dfSpotTickerPart["symbolId"] = symbolId
+                        dfSpotTickerPart["timeframe"] = timeframe
+                        dfSpotTickerPart = dfSpotTickerPart.iloc[:, [10, 11, 0, 1, 2, 3, 4, 5, 6, 9, 8, 7]]
+                        dfSpotTicker = pd.concat([dfSpotTicker, dfSpotTickerPart], ignore_index=True)
 
-# 1706745600000, 0.39080000, 0.39200000, 0.38460000, 0.38610000, 585227.20000000, 1706749199999, 227177.86678000, 1846, 237271.30000000, 92108.63556000, 0
+                    dfSpotTicker['timestamp'] = (dfSpotTicker['timestamp'] / 1000).astype(np.int64)
+                    dfSpotTicker['timestamp'] = pd.to_datetime(dfSpotTicker['timestamp'], unit="s")
+                    dfSpotTicker = dfSpotTicker.astype({'baseAssetVolume': np.int64,
+                                                                    'quoteAssetVolume': np.int64,
+                                                                    'takerBuyBaseAssetVolume': np.int64,
+                                                                    "takerBuyQuoteAssetVolume": np.int64})
+                    print(self.dataProcessor._modify_query_pandas(dfSpotTicker, "PriceOHLCV"))
+            except:
+                print("Queue is empty, worker shuts down")
+                break
 
+    def _getSymbolId(self, symbol, spot=True):
+        return self.dataProcessor.ticker.getSymbolId(symbol=symbol, spot=spot)[0][0]
 
 pd.set_option("display.max_rows", 150)
 pd.set_option("display.max_columns", 150)
 pd.set_option("max_colwidth", 1000)
 dataProcessor = CryptoDataProcessor("test")
 
+# Настройка логгера
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Создаем обработчик для вывода в консоль
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.DEBUG)
+
+# Создаем форматтер и добавляем его к обработчику
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+
+# Добавляем обработчик к логгеру
+logger.addHandler(console_handler)
+
+
 
 # dataProcessor.asset.updateAssets()
-dataProcessor.ticker.updateTickers()
+# dataProcessor.ticker.updateTickers()
+spotTickersFile = open("spotTickers.txt", "r")
+spotTickersList = spotTickersFile.readlines()
+spotTickersList = [ticker.strip("'\n") for ticker in spotTickersList]
+# spotTickersList = spotTickersFile.spl
+
+csvMerger = CSVMerger(dataProcessor=dataProcessor)
+# csvMerger.mergePriceOHLCV(["BTCUSDT", "ETHUSDT"], timeframe="1h")
+csvMerger.mergePriceOHLCV(spotTickersList, timeframe="1h")
+
+
 
 #AssetGroup
 # dataProcessor.assetGroup.addAssetGroup("Shitcoins")
