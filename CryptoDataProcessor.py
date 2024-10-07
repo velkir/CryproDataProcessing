@@ -648,6 +648,16 @@ class CSVMerger:
                 logger.info("Queue is empty or an error occurred, worker shuts down")
                 break
 
+def loadTickersFromFile(path):
+    with open(path, "r") as f:
+        tickers = f.readlines()
+        final_tickers = []
+        for ticker in tickers:
+            final_tickers.append(ticker.strip("'\n"))
+        return final_tickers
+
+spotTickers = loadTickersFromFile("spotTickers.txt")
+umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 
 pd.set_option("display.max_rows", 150)
 pd.set_option("display.max_columns", 150)
