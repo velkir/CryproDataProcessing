@@ -133,7 +133,7 @@ class BinanceDataDumper:
             queue = self._addURLsPathsToQueue(queue, fundingRateURLs, fundingRatePaths)
             return queue
         elif dataType == "metrics":
-            dailyPrefixes = self._createDailyListOfDates(dateStart=dateStart, dateEnd=dateEnd)
+            dailyPrefixes = self._createDailyListOfDates(dateStart=dateStart, dateEnd=dateEnd, metrics=True)
             metricsURLs = [f"{BinanceDataDumper.METRICS_URL+ticker}/{ticker}-metrics-{date}.zip" for date in dailyPrefixes]
             metricsPaths = [f"{self.pathToSave+BinanceDataDumper._FUTURES+BinanceDataDumper._UM+BinanceDataDumper._METRICS}/{ticker}/{ticker}-metrics-{date}.csv" for date in dailyPrefixes]
             queue = self._addURLsPathsToQueue(queue, metricsURLs, metricsPaths)
@@ -151,19 +151,26 @@ class BinanceDataDumper:
         else:
             return None
 
-    def _createDailyListOfDates(self, dateStart=None, dateEnd=None):
+    def _createDailyListOfDates(self, dateStart=None, dateEnd=None, metrics=False):
         if dateEnd is None:
             dateEnd = self._setDefaultDate(dateStart=False)
 
-        if dateStart is None and dateEnd.day == 1:
-            return None
-        elif dateStart is None and dateEnd.day != 1:
-            daysDates = pd.date_range(start=pd.Timestamp(dateEnd.year, dateEnd.month, 1), end=dateEnd, freq="D").strftime('%Y-%m-%d')
-            return daysDates.to_list()
+        if not metrics:
+            if dateStart is None and dateEnd.day == 1:
+                return None
+            elif dateStart is None and dateEnd.day != 1:
+                daysDates = pd.date_range(start=pd.Timestamp(dateEnd.year, dateEnd.month, 1), end=dateEnd, freq="D").strftime('%Y-%m-%d')
+                return daysDates.to_list()
+            else:
+                daysDates = pd.date_range(start=pd.Timestamp(dateStart), end=dateEnd,
+                                          freq="D").strftime('%Y-%m-%d')
+                return daysDates.to_list()
         else:
-            daysDates = pd.date_range(start=pd.Timestamp(dateStart), end=dateEnd,
-                                      freq="D").strftime('%Y-%m-%d')
+            if dateStart is None:
+                dateStart = pd.Timestamp(2017, 1, 9).date()
+            daysDates = pd.date_range(start=dateStart, end=dateEnd, freq="D").strftime('%Y-%m-%d')
             return daysDates.to_list()
+
 
     def _setDefaultDate(self, dateStart=True):
         if dateStart:
@@ -188,10 +195,12 @@ def loadTickersFromFile(path):
 
 spotTickers = loadTickersFromFile("spotTickers.txt")
 umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
-dumper = BinanceDataDumper(spotTickers=spotTickers,
-                           umFuturesTickers=umFuturesTickers,
-                           # umFuturesTickers=["BTCUSDT", "ETHUSDT"],
+dumper = BinanceDataDumper(
+                           # spotTickers=spotTickers,
+                           # umFuturesTickers=umFuturesTickers,
+                           umFuturesTickers=["BTCUSDT", "ETHUSDT"],
                            # dataTypes=["klines", "fundingRate", "metrics"],
-                           dataTypes=["klines"],
+                           # dataTypes=["klines"],
+                           dataTypes=["metrics"],
                            timeframes=["1m"])
 linksPaths = dumper.dumpData()

@@ -387,9 +387,11 @@ class TickerGroup:
 class CSVMerger:
     def __init__(self, dataProcessor):
         self.dataProcessor = dataProcessor
+        self.basicPath = os.getcwd()
         self.priceOHLCVSpotFolder = "data/spot/klines"
         self.priceOHLCVUmFuturesFolder = "data/futures/um/klines"
-        self.basicPath = os.getcwd()
+        self.fundingRatesFolder = "data/futures/um/fundingRate"
+        self.metricsFolder = "data/futures/um/metrics"
 
     def mergePriceOHLCV(self, spotTickers=None, UMFuturesTickers=None, timeframe="1m", fromDateTime=None):
         spotPath = os.path.join(self.basicPath, self.priceOHLCVSpotFolder)
@@ -405,14 +407,14 @@ class CSVMerger:
 
         numThreads = 30
         for i in range(numThreads):
-            worker = Thread(target=self._mergeSymbol,
+            worker = Thread(target=self._merge1PriceOHLCV,
                             args=(queue,
                                   fromDateTime,
                                   timeframe))
             worker.start()
             queue.join()
 
-    def _mergeSymbol(self, queue, fromDateTime=None, timeframe="1m"):
+    def _merge1PriceOHLCV(self, queue, fromDateTime=None, timeframe="1m"):
         while queue.not_empty:
             try:
                 ticker, tickerPath, isSpot = queue.get_nowait()
@@ -454,8 +456,8 @@ class CSVMerger:
                                 "takerBuyBaseAssetVolume",
                                 "takerBuyQuoteAssetVolume"
                             ],
-                            usecols=[0, 1, 2, 3, 4, 5, 7, 8, 9, 10]
-                        )
+                            usecols=[0, 1, 2, 3, 4, 5, 7, 8, 9, 10])
+                        #в части файлов первая строка заголовок. В этом случае она обрезается
                         firstRow = dfTickerPartialData.loc[0, :].values.flatten().tolist()
                         if all([True for value in firstRow if isinstance(value, str)]):
                             dfTickerPartialData = dfTickerPartialData.iloc[1:, :]
@@ -470,7 +472,6 @@ class CSVMerger:
 
                     dfTicker['timestamp'] = (dfTicker['timestamp'].astype(np.int64) / 1000).astype(np.int64)
                     dfTicker['timestamp'] = pd.to_datetime(dfTicker['timestamp'], unit="s")
-
                     dfTicker['baseAssetVolume'] = dfTicker['baseAssetVolume'].astype(np.float64).round().astype(np.int64)
                     dfTicker['quoteAssetVolume'] = dfTicker['quoteAssetVolume'].astype(np.float64).round().astype(np.int64)
                     dfTicker['takerBuyBaseAssetVolume'] = dfTicker['takerBuyBaseAssetVolume'].astype(np.float64).round().astype(np.int64)
@@ -480,12 +481,173 @@ class CSVMerger:
                     logger.info(f"Data processed and stored for ticker: {ticker}")
                 except Exception as e:
                     logger.exception(f"Error while entering data into the database for ticker: {ticker}")
-            except Exception as e:
-                logger.exception("Queue is empty or an error occurred, worker shuts down")
+            except:
+                logger.info("Queue is empty or an error occurred, worker shuts down")
                 break
 
     def _getSymbolId(self, symbol, isSpot):
         return self.dataProcessor.ticker.getSymbolId(symbol=symbol, spot=isSpot)[0][0]
+
+    def mergeFundingRates(self, UMFuturesTickers, fromDateTime=None):
+        fundingRateFullPath = os.path.join(self.basicPath, self.fundingRatesFolder)
+        queue = Queue()
+
+        downloadedFuturesTickers = os.listdir(fundingRateFullPath)
+        [queue.put(umFuturesTicker) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
+
+        numThreads = 10
+        for i in range(numThreads):
+            worker = Thread(target=self._merge1FundingRate,
+                            args=(queue,
+                                  fundingRateFullPath,
+                                  fromDateTime))
+            worker.start()
+            queue.join()
+
+    def _merge1FundingRate(self, queue, fundingRateFullPath, fromDateTime):
+        while queue.not_empty:
+            try:
+                ticker = queue.get_nowait()
+                logger.info(f"Processing fundingRate for ticker: {ticker}")
+                try:
+                    symbolId = self._getSymbolId(symbol=ticker, isSpot=0)
+                    logger.debug(f"Obtained symbolId: {symbolId} for ticker (futures): {ticker}")
+                    tickerPath = os.path.join(fundingRateFullPath, ticker)
+                    tickerFiles = [file for file in os.listdir(tickerPath) if not file.startswith(".")]
+                    logger.debug(f"Found {len(tickerFiles)} files for ticker: {ticker}")
+                    dfTicker = pd.DataFrame(columns=[
+                        "symbolId",
+                        "timestamp",
+                        "fundingRate",
+                        "fundingIntervalHours"
+                    ])
+                    for tickerFile in tickerFiles:
+                        tickerFilePath = os.path.join(tickerPath, tickerFile)
+                        logger.debug(f"Reading file: {tickerFilePath}")
+                        dfTickerPartialData = pd.read_csv(
+                            tickerFilePath,
+                            names=[
+                                "timestamp",
+                                "fundingIntervalHours",
+                                "fundingRate",
+                            ])
+                        # в части файлов первая строка заголовок. В этом случае она обрезается
+                        firstRow = dfTickerPartialData.loc[0, :].values.flatten().tolist()
+                        if all([True for value in firstRow if isinstance(value, str)]):
+                            dfTickerPartialData = dfTickerPartialData.iloc[1:, :]
+
+                        dfTickerPartialData["symbolId"] = symbolId
+                        dfTickerPartialData = dfTickerPartialData.iloc[:, [
+                                                                              3, 0, 2, 1
+                                                                          ]]
+                        dfTicker = pd.concat([dfTicker, dfTickerPartialData], ignore_index=True)
+
+                    dfTicker['timestamp'] = (dfTicker['timestamp'].astype(np.int64) / 1000).astype(np.int64)
+                    dfTicker['timestamp'] = pd.to_datetime(dfTicker['timestamp'], unit="s")
+
+                    result = self.dataProcessor._modify_query_pandas(dfTicker, "FundingRate")
+                    logger.info(f"Data processed and stored for ticker: {ticker}")
+                except Exception as e:
+                    logger.exception(f"Error while entering data into the database for ticker: {ticker}")
+            except:
+                logger.info("Queue is empty or an error occurred, worker shuts down")
+                break
+
+    def mergeMetrics(self, UMFuturesTickers, fromDateTime=None):
+        metricsFullPath = os.path.join(self.basicPath, self.metricsFolder)
+        queue = Queue()
+
+        downloadedFuturesTickers = os.listdir(metricsFullPath)
+        [queue.put(umFuturesTicker) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
+
+        numThreads = 10
+        for i in range(numThreads):
+            worker = Thread(target=self._merge1Metrics,
+                            args=(queue,
+                                  metricsFullPath,
+                                  fromDateTime))
+            worker.start()
+            queue.join()
+
+    def _merge1Metrics(self, queue, metricsFullPath, fromDateTime, timeframe="5m"):
+        while queue.not_empty:
+            try:
+                ticker = queue.get_nowait()
+                logger.info(f"Processing metrics for ticker: {ticker}")
+                try:
+                    symbolId = self._getSymbolId(symbol=ticker, isSpot=0)
+                    logger.debug(f"Obtained symbolId: {symbolId} for ticker (futures): {ticker}")
+                    tickerPath = os.path.join(metricsFullPath, ticker)
+                    tickerFiles = [file for file in os.listdir(tickerPath) if not file.startswith(".")]
+                    logger.debug(f"Found {len(tickerFiles)} files for ticker: {ticker}")
+
+                    dfOpenInterestTicker = pd.DataFrame(columns=[
+                        "symbolId",
+                        "timeframe",
+                        "timestamp",
+                        "openInterestUsd",
+                        "openInterestAsset"
+                    ])
+
+                    dfLongShortRatio = pd.DataFrame(columns=[
+                        "symbolId",
+                        "timeframe",
+                        "timestamp",
+                        "topTradersAccountsRatio",
+                        "topTradersPositionsRatio",
+                        "takerVolumeRatio"
+                    ])
+
+                    for tickerFile in tickerFiles:
+                        tickerFilePath = os.path.join(tickerPath, tickerFile)
+                        logger.debug(f"Reading file: {tickerFilePath}")
+                        dfTickerPartialData = pd.read_csv(
+                            tickerFilePath,
+                            names=[
+                                "timestamp",
+                                "symbol",
+                                "openInterestAsset",
+                                "openInterestUsd",
+                                "topTradersAccountsRatio",
+                                "topTradersPositionsRatio",
+                                "temp",
+                                "takerVolumeRatio"
+                            ],
+                            index_col=False)
+                        # в части файлов первая строка заголовок. В этом случае она обрезается
+                        firstRow = dfTickerPartialData.loc[0, :].values.flatten().tolist()
+                        if all([True for value in firstRow if isinstance(value, str)]):
+                            dfTickerPartialData = dfTickerPartialData.iloc[1:, :]
+
+                        dfTickerPartialData["symbolId"] = symbolId
+                        dfTickerPartialData["timeframe"] = timeframe
+                        dfTickerPartialData.drop(columns=["symbol", "temp"], inplace=True)
+
+                        dfOpenInterestTickerPartial = dfTickerPartialData.iloc[:, [
+                                                                              6, 7, 0, 2, 1
+                                                                          ]]
+                        dfLongShortRatioPartial = dfTickerPartialData.iloc[:, [
+                                                                              6, 7, 0, 3, 4, 5
+                                                                          ]]
+                        dfOpenInterestTicker = pd.concat([dfOpenInterestTicker, dfOpenInterestTickerPartial], ignore_index=True)
+                        dfLongShortRatio = pd.concat([dfLongShortRatio, dfLongShortRatioPartial], ignore_index=True)
+
+                        dfOpenInterestTicker['openInterestAsset'] = dfOpenInterestTicker['openInterestAsset'].astype(
+                            np.float64).round().astype(
+                            np.int64)
+                        dfOpenInterestTicker['openInterestUsd'] = dfOpenInterestTicker['openInterestUsd'].astype(
+                            np.float64).round().astype(
+                            np.int64)
+
+                    resultOpenInterest = self.dataProcessor._modify_query_pandas(dfOpenInterestTicker, "OpenInterest")
+                    resultLongShortRatio = self.dataProcessor._modify_query_pandas(dfLongShortRatio, "LongShortRatio")
+                    logger.info(f"Data processed and stored for ticker: {ticker}")
+                except Exception as e:
+                    logger.exception(f"Error while entering data into the database for ticker: {ticker}")
+            except:
+                logger.info("Queue is empty or an error occurred, worker shuts down")
+                break
+
 
 pd.set_option("display.max_rows", 150)
 pd.set_option("display.max_columns", 150)
@@ -519,12 +681,14 @@ spotTickersList = spotTickersFile.readlines()
 spotTickersList = [ticker.strip("'\n") for ticker in spotTickersList]
 
 
-
 csvMerger = CSVMerger(dataProcessor=dataProcessor)
 # csvMerger.mergePriceOHLCV(["BTCUSDT", "ETHUSDT"], timeframe="1h")
-csvMerger.mergePriceOHLCV(spotTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"], UMFuturesTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"], timeframe="1h")
-# csvMerger.mergePriceOHLCV(spotTickersList, timeframe="1h")
+# csvMerger.mergePriceOHLCV(spotTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"], UMFuturesTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"], timeframe="1h")
+# csvMerger.mergeFundingRates(UMFuturesTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"])
+csvMerger.mergeMetrics(UMFuturesTickers=["BTCUSDT", "ETHUSDT"])
 
+
+# csvMerger.mergePriceOHLCV(spotTickersList, timeframe="1h")
 
 
 #AssetGroup
