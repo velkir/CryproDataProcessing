@@ -182,14 +182,16 @@ def loadTickersFromFile(path):
     with open(path, "r") as f:
         tickers = f.readlines()
         final_tickers = []
-        # return [ticker.strip("'") for ticker in tickers]
         for ticker in tickers:
             final_tickers.append(ticker.strip("'\n"))
         return final_tickers
 
 spotTickers = loadTickersFromFile("spotTickers.txt")
-
+umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 dumper = BinanceDataDumper(spotTickers=spotTickers,
-                           dataTypes=["klines", "fundingRate", "metrics"],
-                           timeframes=["1h"])
+                           umFuturesTickers=umFuturesTickers,
+                           # umFuturesTickers=["BTCUSDT", "ETHUSDT"],
+                           # dataTypes=["klines", "fundingRate", "metrics"],
+                           dataTypes=["klines"],
+                           timeframes=["1m"])
 linksPaths = dumper.dumpData()
