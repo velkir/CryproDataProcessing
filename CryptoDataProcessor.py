@@ -26,7 +26,6 @@ class CryptoDataProcessor:
         connection_string = f"mysql+mysqlconnector://user:1234@localhost:3306/{dbName}"
         # engine = create_engine(connection_string, echo=True)
         engine = create_engine(connection_string, echo=False)
-
         return engine
 
     def _basic_query(self, query, queryType="modify", params=None):
@@ -397,28 +396,46 @@ class CSVMerger:
         spotPath = os.path.join(self.basicPath, self.priceOHLCVSpotFolder)
         umFuturesPath = os.path.join(self.basicPath, self.priceOHLCVUmFuturesFolder)
         queue = Queue()
+
+        logger.info("Starting mergePriceOHLCV with timeframe: %s and fromDateTime: %s", timeframe, fromDateTime)
+
         if spotTickers:
             downloadedSpotTickers = os.listdir(spotPath)
-            [queue.put((spotTicker, spotPath, True)) for spotTicker in spotTickers if spotTicker in downloadedSpotTickers]
+            logger.info("Found %d spot tickers in directory: %s", len(downloadedSpotTickers), spotPath)
+
+            for spotTicker in spotTickers:
+                if spotTicker in downloadedSpotTickers:
+                    queue.put((spotTicker, spotPath, True))
+                    logger.info("Added spot ticker %s to the queue", spotTicker)
 
         if UMFuturesTickers:
             downloadedFuturesTickers = os.listdir(umFuturesPath)
-            [queue.put((umFuturesTicker, umFuturesPath, False)) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
+            logger.info("Found %d UM Futures tickers in directory: %s", len(downloadedFuturesTickers), umFuturesPath)
 
-        numThreads = 30
+            for umFuturesTicker in UMFuturesTickers:
+                if umFuturesTicker in downloadedFuturesTickers:
+                    queue.put((umFuturesTicker, umFuturesPath, False))
+                    logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
+
+        numThreads = 10
+        logger.info("Starting %d threads to process the queue", numThreads)
+
         for i in range(numThreads):
             worker = Thread(target=self._merge1PriceOHLCV,
                             args=(queue,
                                   fromDateTime,
                                   timeframe))
             worker.start()
-            queue.join()
+            logger.info("Started thread %d", i + 1)
+
+        queue.join()
+        logger.info("Completed merging OHLCV data.")
 
     def _merge1PriceOHLCV(self, queue, fromDateTime=None, timeframe="1m"):
         while queue.not_empty:
             try:
                 ticker, tickerPath, isSpot = queue.get_nowait()
-                logger.info(f"Processing ticker: {ticker}, tickerPath: {tickerPath}")
+                logger.info(f"Processing OHLCV for ticker: {ticker}, tickerPath: {tickerPath}")
                 try:
                     symbolId = self._getSymbolId(symbol=ticker, isSpot=isSpot)
                     logger.debug(f"Obtained symbolId: {symbolId} for ticker: {ticker}")
@@ -469,7 +486,6 @@ class CSVMerger:
                                                                           ]]
                         dfTicker = pd.concat([dfTicker, dfTickerPartialData], ignore_index=True)
 
-
                     dfTicker['timestamp'] = (dfTicker['timestamp'].astype(np.int64) / 1000).astype(np.int64)
                     dfTicker['timestamp'] = pd.to_datetime(dfTicker['timestamp'], unit="s")
                     dfTicker['baseAssetVolume'] = dfTicker['baseAssetVolume'].astype(np.float64).round().astype(np.int64)
@@ -492,17 +508,30 @@ class CSVMerger:
         fundingRateFullPath = os.path.join(self.basicPath, self.fundingRatesFolder)
         queue = Queue()
 
+        logger.info("Starting mergeFundingRates with fromDateTime: %s", fromDateTime)
+
         downloadedFuturesTickers = os.listdir(fundingRateFullPath)
-        [queue.put(umFuturesTicker) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
+        logger.info("Found %d funding rate tickers in directory: %s", len(downloadedFuturesTickers),
+                    fundingRateFullPath)
+
+        for umFuturesTicker in UMFuturesTickers:
+            if umFuturesTicker in downloadedFuturesTickers:
+                queue.put(umFuturesTicker)
+                logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
 
         numThreads = 10
+        logger.info("Starting %d threads to process the funding rates queue", numThreads)
+
         for i in range(numThreads):
             worker = Thread(target=self._merge1FundingRate,
                             args=(queue,
                                   fundingRateFullPath,
                                   fromDateTime))
             worker.start()
-            queue.join()
+            logger.info("Started thread %d", i + 1)
+
+        queue.join()
+        logger.info("Completed merging funding rates.")
 
     def _merge1FundingRate(self, queue, fundingRateFullPath, fromDateTime):
         while queue.not_empty:
@@ -557,17 +586,29 @@ class CSVMerger:
         metricsFullPath = os.path.join(self.basicPath, self.metricsFolder)
         queue = Queue()
 
+        logger.info("Starting mergeMetrics with fromDateTime: %s", fromDateTime)
+
         downloadedFuturesTickers = os.listdir(metricsFullPath)
-        [queue.put(umFuturesTicker) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
+        logger.info("Found %d metrics tickers in directory: %s", len(downloadedFuturesTickers), metricsFullPath)
+
+        for umFuturesTicker in UMFuturesTickers:
+            if umFuturesTicker in downloadedFuturesTickers:
+                queue.put(umFuturesTicker)
+                logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
 
         numThreads = 10
+        logger.info("Starting %d threads to process the metrics queue", numThreads)
+
         for i in range(numThreads):
             worker = Thread(target=self._merge1Metrics,
                             args=(queue,
                                   metricsFullPath,
                                   fromDateTime))
             worker.start()
-            queue.join()
+            logger.info("Started thread %d", i + 1)
+
+        queue.join()
+        logger.info("Completed merging metrics.")
 
     def _merge1Metrics(self, queue, metricsFullPath, fromDateTime, timeframe="5m"):
         while queue.not_empty:
@@ -656,14 +697,6 @@ def loadTickersFromFile(path):
             final_tickers.append(ticker.strip("'\n"))
         return final_tickers
 
-spotTickers = loadTickersFromFile("spotTickers.txt")
-umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
-
-pd.set_option("display.max_rows", 150)
-pd.set_option("display.max_columns", 150)
-pd.set_option("max_colwidth", 1000)
-dataProcessor = CryptoDataProcessor("test")
-
 # Настройка логгера
 # logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
@@ -679,31 +712,32 @@ dataProcessor = CryptoDataProcessor("test")
 # # Добавляем обработчик к логгеру
 # logger.addHandler(console_handler)
 
-
-# dataProcessor.asset.updateAssets()
-# dataProcessor.ticker.updateTickers()
+import warnings
+warnings.filterwarnings('ignore')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-spotTickersFile = open("spotTickers.txt", "r")
-spotTickersList = spotTickersFile.readlines()
-spotTickersList = [ticker.strip("'\n") for ticker in spotTickersList]
+pd.set_option("display.max_rows", 150)
+pd.set_option("display.max_columns", 150)
+pd.set_option("max_colwidth", 1000)
 
+dataProcessor = CryptoDataProcessor("test")
+# dataProcessor.asset.updateAssets()
+# dataProcessor.ticker.updateTickers()
+
+spotTickers = loadTickersFromFile("spotTickers.txt")
+umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 
 csvMerger = CSVMerger(dataProcessor=dataProcessor)
-# csvMerger.mergePriceOHLCV(["BTCUSDT", "ETHUSDT"], timeframe="1h")
-# csvMerger.mergePriceOHLCV(spotTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"], UMFuturesTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"], timeframe="1h")
-# csvMerger.mergeFundingRates(UMFuturesTickers=["BTCUSDT", "ETHUSDT", "DOGEUSDT"])
-csvMerger.mergeMetrics(UMFuturesTickers=["BTCUSDT", "ETHUSDT"])
-
-
-# csvMerger.mergePriceOHLCV(spotTickersList, timeframe="1h")
+csvMerger.mergePriceOHLCV(spotTickers=spotTickers, UMFuturesTickers=umFuturesTickers, timeframe="1m")
+csvMerger.mergeMetrics(UMFuturesTickers=umFuturesTickers)
+csvMerger.mergeFundingRates(UMFuturesTickers=umFuturesTickers)
 
 
 #AssetGroup
-# dataProcessor.assetGroup.addAssetGroup("Shitcoins")
-# dataProcessor.assetGroup.addAssetGroup("L1")
+# dataProcessor.assetGroup.addAssetGroup("test1")
+# dataProcessor.assetGroup.addAssetGroup("test2")
 # dataProcessor.assetGroup.addAssetGroup("L2")
 # print(dataProcessor.assetGroup.getAllAssetGroups())
 # dataProcessor.assetGroup.deleteAssetGroup("L1")

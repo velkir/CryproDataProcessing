@@ -42,7 +42,7 @@ class BinanceDataDumper:
     def dumpData(self, dateStart=None, dateEnd=None):
         queue = Queue()
         queue = self._getAllLinksPaths(queue=queue, dateStart=dateStart, dateEnd=dateEnd)
-        numThreads = 10
+        numThreads = 25
         for i in range(numThreads):
             worker = Thread(target=self._download1File, args=(queue,))
             worker.start()
@@ -196,11 +196,11 @@ def loadTickersFromFile(path):
 spotTickers = loadTickersFromFile("spotTickers.txt")
 umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 dumper = BinanceDataDumper(
-                           # spotTickers=spotTickers,
-                           # umFuturesTickers=umFuturesTickers,
-                           umFuturesTickers=["BTCUSDT", "ETHUSDT"],
+                           spotTickers=spotTickers,
+                           umFuturesTickers=umFuturesTickers,
+                           # umFuturesTickers=["BTCUSDT", "ETHUSDT"],
                            # dataTypes=["klines", "fundingRate", "metrics"],
                            # dataTypes=["klines"],
-                           dataTypes=["metrics"],
-                           timeframes=["1m"])
+                           dataTypes=["metrics", "fundingRate"],
+                           timeframes=["5m"])
 linksPaths = dumper.dumpData()
