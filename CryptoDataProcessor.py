@@ -52,7 +52,7 @@ class CryptoDataProcessor:
         except Exception as e:
             print(f"An error occurred: {e}")
 
-    def _modify_query_pandas(self, df, table, if_exists='append', index=False, method="multi", chunksize=500):
+    def _modify_query_pandas(self, df, table, if_exists='append', index=False, method="multi", chunksize=5000000):
         try:
             return df.to_sql(name=table, con=self._engine, if_exists=if_exists, index=index, method=method, chunksize=chunksize)
         except Exception as e:
@@ -403,21 +403,23 @@ class CSVMerger:
             downloadedSpotTickers = os.listdir(spotPath)
             logger.info("Found %d spot tickers in directory: %s", len(downloadedSpotTickers), spotPath)
 
-            for spotTicker in spotTickers:
-                if spotTicker in downloadedSpotTickers:
-                    queue.put((spotTicker, spotPath, True))
-                    logger.info("Added spot ticker %s to the queue", spotTicker)
+            [queue.put((spotTicker, spotPath, 1)) for spotTicker in spotTickers if spotTicker in downloadedSpotTickers]
+            # for spotTicker in spotTickers:
+            #     if spotTicker in downloadedSpotTickers:
+            #         queue.put((spotTicker, spotPath, True))
+            #         logger.info("Added spot ticker %s to the queue", spotTicker)
 
         if UMFuturesTickers:
             downloadedFuturesTickers = os.listdir(umFuturesPath)
             logger.info("Found %d UM Futures tickers in directory: %s", len(downloadedFuturesTickers), umFuturesPath)
 
-            for umFuturesTicker in UMFuturesTickers:
-                if umFuturesTicker in downloadedFuturesTickers:
-                    queue.put((umFuturesTicker, umFuturesPath, False))
-                    logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
+            [queue.put((umFuturesTicker, umFuturesPath, 0)) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
+            # for umFuturesTicker in UMFuturesTickers:
+            #     if umFuturesTicker in downloadedFuturesTickers:
+            #         queue.put((umFuturesTicker, umFuturesPath, False))
+            #         logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
 
-        numThreads = 10
+        numThreads = 1
         logger.info("Starting %d threads to process the queue", numThreads)
 
         for i in range(numThreads):
@@ -497,8 +499,9 @@ class CSVMerger:
                     logger.info(f"Data processed and stored for ticker: {ticker}")
                 except Exception as e:
                     logger.exception(f"Error while entering data into the database for ticker: {ticker}")
-            except:
+            except Exception as e:
                 logger.info("Queue is empty or an error occurred, worker shuts down")
+                print(e)
                 break
 
     def _getSymbolId(self, symbol, isSpot):
@@ -730,9 +733,10 @@ spotTickers = loadTickersFromFile("spotTickers.txt")
 umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 
 csvMerger = CSVMerger(dataProcessor=dataProcessor)
-csvMerger.mergePriceOHLCV(spotTickers=spotTickers, UMFuturesTickers=umFuturesTickers, timeframe="1m")
-csvMerger.mergeMetrics(UMFuturesTickers=umFuturesTickers)
-csvMerger.mergeFundingRates(UMFuturesTickers=umFuturesTickers)
+# csvMerger.mergePriceOHLCV(spotTickers=spotTickers, UMFuturesTickers=umFuturesTickers, timeframe="1m")
+csvMerger.mergePriceOHLCV(spotTickers=["BTCUSDT", "ETHUSDT"], UMFuturesTickers=["BTCUSDT", "ETHUSDT"], timeframe="1m")
+# csvMerger.mergeMetrics(UMFuturesTickers=umFuturesTickers)
+# csvMerger.mergeFundingRates(UMFuturesTickers=umFuturesTickers)
 
 
 #AssetGroup
