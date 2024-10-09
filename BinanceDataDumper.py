@@ -19,7 +19,6 @@ class BinanceDataDumper:
     _KLINES = "klines/"
     _METRICS = "metrics/"
     _FUNDING_RATE = "fundingRate/"
-    # _AGG_TRADES = "aggTrades/"
 
     KLINES_SPOT_DAILY_URL = _BASE_URL + _SPOT + _DAILY + _KLINES
     KLINES_SPOT_MONTHLY_URL = _BASE_URL + _SPOT + _MONTHLY + _KLINES
@@ -175,7 +174,6 @@ class BinanceDataDumper:
     def _setDefaultDate(self, dateStart=True):
         if dateStart:
             return pd.Timestamp(2017, 1, 9).date()
-            # return pd.Timestamp(2023, 1, 1).date()
         else:
             return (self.currentDate-pd.Timedelta(days=1)).date()
 
@@ -196,11 +194,12 @@ def loadTickersFromFile(path):
 spotTickers = loadTickersFromFile("spotTickers.txt")
 umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 dumper = BinanceDataDumper(
-                           spotTickers=spotTickers,
-                           umFuturesTickers=umFuturesTickers,
+                           # spotTickers=["BTCUSDT", "ETHUSDT"],
+                           umFuturesTickers=["DOGEUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "TRXUSDT", "EOSUSDT", "PROMUSDT"],
                            # umFuturesTickers=["BTCUSDT", "ETHUSDT"],
                            # dataTypes=["klines", "fundingRate", "metrics"],
                            # dataTypes=["klines"],
-                           dataTypes=["metrics", "fundingRate"],
-                           timeframes=["5m"])
+                           dataTypes=["metrics", "fundingRate"]
+                           # timeframes=["1m"]
+                            )
 linksPaths = dumper.dumpData()

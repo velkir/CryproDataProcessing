@@ -6,12 +6,17 @@ import ccxt
 from playwright.sync_api import sync_playwright
 import numpy as np
 import logging
-from queue import Queue
+import queue
+from queue import Queue, Empty
 from threading import Thread
+from sqlalchemy import event
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class CryptoDataProcessor:
     def __init__(self, dbName):
         self._engine = self._initialize_db_connection(dbName)
+        self._register_event()
         self.ccxtBinance = ccxt.binance()
         self.exchange = Exchange(self)
         self.exchangeBalanceHistory = ExchangeBalanceHistory(self)
@@ -52,11 +57,19 @@ class CryptoDataProcessor:
         except Exception as e:
             print(f"An error occurred: {e}")
 
-    def _modify_query_pandas(self, df, table, if_exists='append', index=False, method="multi", chunksize=5000000):
+    def _modify_query_pandas(self, df, table, if_exists='append', index=False, method="multi", chunksize=500):
         try:
             return df.to_sql(name=table, con=self._engine, if_exists=if_exists, index=index, method=method, chunksize=chunksize)
         except Exception as e:
                 print(f"An error occurred: {e}")
+
+    def _register_event(self):
+        @event.listens_for(self._engine, "before_cursor_execute")
+        def receive_before_cursor_execute(
+                conn, cursor, statement, params, context, executemany
+        ):
+            if executemany:
+                cursor.fast_executemany = True
 
 class Exchange:
     def __init__(self, dataProcessor):
@@ -387,6 +400,7 @@ class CSVMerger:
     def __init__(self, dataProcessor):
         self.dataProcessor = dataProcessor
         self.basicPath = os.getcwd()
+        self.shared_lock = threading.Lock()
         self.priceOHLCVSpotFolder = "data/spot/klines"
         self.priceOHLCVUmFuturesFolder = "data/futures/um/klines"
         self.fundingRatesFolder = "data/futures/um/fundingRate"
@@ -395,7 +409,7 @@ class CSVMerger:
     def mergePriceOHLCV(self, spotTickers=None, UMFuturesTickers=None, timeframe="1m", fromDateTime=None):
         spotPath = os.path.join(self.basicPath, self.priceOHLCVSpotFolder)
         umFuturesPath = os.path.join(self.basicPath, self.priceOHLCVUmFuturesFolder)
-        queue = Queue()
+        tasks = []
 
         logger.info("Starting mergePriceOHLCV with timeframe: %s and fromDateTime: %s", timeframe, fromDateTime)
 
@@ -403,50 +417,66 @@ class CSVMerger:
             downloadedSpotTickers = os.listdir(spotPath)
             logger.info("Found %d spot tickers in directory: %s", len(downloadedSpotTickers), spotPath)
 
-            [queue.put((spotTicker, spotPath, 1)) for spotTicker in spotTickers if spotTicker in downloadedSpotTickers]
-            # for spotTicker in spotTickers:
-            #     if spotTicker in downloadedSpotTickers:
-            #         queue.put((spotTicker, spotPath, True))
-            #         logger.info("Added spot ticker %s to the queue", spotTicker)
+            tasks.extend(
+                [(spotTicker, spotPath, 1) for spotTicker in spotTickers if spotTicker in downloadedSpotTickers])
 
         if UMFuturesTickers:
             downloadedFuturesTickers = os.listdir(umFuturesPath)
             logger.info("Found %d UM Futures tickers in directory: %s", len(downloadedFuturesTickers), umFuturesPath)
 
-            [queue.put((umFuturesTicker, umFuturesPath, 0)) for umFuturesTicker in UMFuturesTickers if umFuturesTicker in downloadedFuturesTickers]
-            # for umFuturesTicker in UMFuturesTickers:
-            #     if umFuturesTicker in downloadedFuturesTickers:
-            #         queue.put((umFuturesTicker, umFuturesPath, False))
-            #         logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
+            tasks.extend([(umFuturesTicker, umFuturesPath, 0) for umFuturesTicker in UMFuturesTickers if
+                          umFuturesTicker in downloadedFuturesTickers])
 
-        numThreads = 1
-        logger.info("Starting %d threads to process the queue", numThreads)
+        numThreads = 20
+        logger.info("Starting %d threads to process the tasks", numThreads)
 
-        for i in range(numThreads):
-            worker = Thread(target=self._merge1PriceOHLCV,
-                            args=(queue,
-                                  fromDateTime,
-                                  timeframe))
-            worker.start()
-            logger.info("Started thread %d", i + 1)
+        with ThreadPoolExecutor(max_workers=numThreads) as executor:
+            futures = {executor.submit(self._merge1PriceOHLCV, task, fromDateTime, timeframe): task for task in tasks}
 
-        queue.join()
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.exception(f"An error occurred processing task {task}: {e}")
+
         logger.info("Completed merging OHLCV data.")
 
-    def _merge1PriceOHLCV(self, queue, fromDateTime=None, timeframe="1m"):
-        while queue.not_empty:
-            try:
-                ticker, tickerPath, isSpot = queue.get_nowait()
-                logger.info(f"Processing OHLCV for ticker: {ticker}, tickerPath: {tickerPath}")
-                try:
-                    symbolId = self._getSymbolId(symbol=ticker, isSpot=isSpot)
-                    logger.debug(f"Obtained symbolId: {symbolId} for ticker: {ticker}")
-                    tickerPath = os.path.join(tickerPath, ticker, timeframe)
-                    tickerFiles = [file for file in os.listdir(tickerPath) if not file.startswith(".")]
-                    logger.debug(f"Found {len(tickerFiles)} files for ticker: {ticker}")
-                    dfTicker = pd.DataFrame(columns=[
-                        "symbolId",
-                        "timeframe",
+    def _merge1PriceOHLCV(self, task, fromDateTime=None, timeframe="1m"):
+        ticker, tickerPath, isSpot = task
+        if isSpot:
+            tickerPath = os.path.join(self.basicPath, self.priceOHLCVSpotFolder)
+        else:
+            tickerPath = os.path.join(self.basicPath, self.priceOHLCVUmFuturesFolder)
+        logger.info(f"Processing OHLCV for ticker: {ticker}, tickerPath: {tickerPath}")
+        try:
+            with self.shared_lock:
+                symbolId = self._getSymbolId(symbol=ticker, isSpot=isSpot)
+
+            logger.debug(f"Obtained symbolId: {symbolId} for ticker: {ticker}")
+            tickerPath = os.path.join(tickerPath, ticker, timeframe)
+            tickerFiles = [file for file in os.listdir(tickerPath) if not file.startswith(".")]
+            logger.debug(f"Found {len(tickerFiles)} files for ticker: {ticker}")
+            dfTicker = pd.DataFrame(columns=[
+                "symbolId",
+                "timeframe",
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "baseAssetVolume",
+                "quoteAssetVolume",
+                "takerBuyBaseAssetVolume",
+                "takerBuyQuoteAssetVolume",
+                "tradesCount"
+            ])
+            for tickerFile in tickerFiles:
+                tickerFilePath = os.path.join(tickerPath, tickerFile)
+                logger.debug(f"Reading file: {tickerFilePath}")
+                dfTickerPartialData = pd.read_csv(
+                    tickerFilePath,
+                    names=[
                         "timestamp",
                         "open",
                         "high",
@@ -454,62 +484,43 @@ class CSVMerger:
                         "close",
                         "baseAssetVolume",
                         "quoteAssetVolume",
+                        "tradesCount",
                         "takerBuyBaseAssetVolume",
-                        "takerBuyQuoteAssetVolume",
-                        "tradesCount"
-                    ])
-                    for tickerFile in tickerFiles:
-                        tickerFilePath = os.path.join(tickerPath, tickerFile)
-                        logger.debug(f"Reading file: {tickerFilePath}")
-                        dfTickerPartialData = pd.read_csv(
-                            tickerFilePath,
-                            names=[
-                                "timestamp",
-                                "open",
-                                "high",
-                                "low",
-                                "close",
-                                "baseAssetVolume",
-                                "quoteAssetVolume",
-                                "tradesCount",
-                                "takerBuyBaseAssetVolume",
-                                "takerBuyQuoteAssetVolume"
-                            ],
-                            usecols=[0, 1, 2, 3, 4, 5, 7, 8, 9, 10])
-                        #в части файлов первая строка заголовок. В этом случае она обрезается
-                        firstRow = dfTickerPartialData.loc[0, :].values.flatten().tolist()
-                        if all([True for value in firstRow if isinstance(value, str)]):
-                            dfTickerPartialData = dfTickerPartialData.iloc[1:, :]
+                        "takerBuyQuoteAssetVolume"
+                    ],
+                    usecols=[0, 1, 2, 3, 4, 5, 7, 8, 9, 10]
+                )
+                # In some files, the first row is a header. If so, remove it.
+                firstRow = dfTickerPartialData.loc[0, :].values.flatten().tolist()
+                if all([isinstance(value, str) for value in firstRow]):
+                    dfTickerPartialData = dfTickerPartialData.iloc[1:, :]
 
-                        dfTickerPartialData["symbolId"] = symbolId
-                        dfTickerPartialData["timeframe"] = timeframe
-                        dfTickerPartialData = dfTickerPartialData.iloc[:, [
-                                                                              10, 11, 0, 1, 2, 3, 4, 5, 6, 9, 8, 7
-                                                                          ]]
-                        dfTicker = pd.concat([dfTicker, dfTickerPartialData], ignore_index=True)
+                dfTickerPartialData["symbolId"] = symbolId
+                dfTickerPartialData["timeframe"] = timeframe
+                dfTickerPartialData = dfTickerPartialData.iloc[:, [
+                                                                      10, 11, 0, 1, 2, 3, 4, 5, 6, 9, 8, 7
+                                                                  ]]
+                dfTicker = pd.concat([dfTicker, dfTickerPartialData], ignore_index=True)
 
-                    dfTicker['timestamp'] = (dfTicker['timestamp'].astype(np.int64) / 1000).astype(np.int64)
-                    dfTicker['timestamp'] = pd.to_datetime(dfTicker['timestamp'], unit="s")
-                    dfTicker['baseAssetVolume'] = dfTicker['baseAssetVolume'].astype(np.float64).round().astype(np.int64)
-                    dfTicker['quoteAssetVolume'] = dfTicker['quoteAssetVolume'].astype(np.float64).round().astype(np.int64)
-                    dfTicker['takerBuyBaseAssetVolume'] = dfTicker['takerBuyBaseAssetVolume'].astype(np.float64).round().astype(np.int64)
-                    dfTicker['takerBuyQuoteAssetVolume'] = dfTicker['takerBuyQuoteAssetVolume'].astype(np.float64).round().astype(np.int64)
+            dfTicker['timestamp'] = pd.to_datetime(dfTicker['timestamp'].astype(np.int64) // 1000, unit="s")
+            dfTicker['baseAssetVolume'] = dfTicker['baseAssetVolume'].astype(np.float64).round().astype(np.int64)
+            dfTicker['quoteAssetVolume'] = dfTicker['quoteAssetVolume'].astype(np.float64).round().astype(np.int64)
+            dfTicker['takerBuyBaseAssetVolume'] = dfTicker['takerBuyBaseAssetVolume'].astype(np.float64).round().astype(
+                np.int64)
+            dfTicker['takerBuyQuoteAssetVolume'] = dfTicker['takerBuyQuoteAssetVolume'].astype(
+                np.float64).round().astype(np.int64)
 
-                    result = self.dataProcessor._modify_query_pandas(dfTicker, "PriceOHLCV")
-                    logger.info(f"Data processed and stored for ticker: {ticker}")
-                except Exception as e:
-                    logger.exception(f"Error while entering data into the database for ticker: {ticker}")
-            except Exception as e:
-                logger.info("Queue is empty or an error occurred, worker shuts down")
-                print(e)
-                break
+            result = self.dataProcessor._modify_query_pandas(dfTicker, "PriceOHLCV")
+            logger.info(f"Data processed and stored for ticker: {ticker}")
+        except Exception as e:
+            logger.exception(f"Error while entering data into the database for ticker: {ticker}")
 
     def _getSymbolId(self, symbol, isSpot):
         return self.dataProcessor.ticker.getSymbolId(symbol=symbol, spot=isSpot)[0][0]
 
     def mergeFundingRates(self, UMFuturesTickers, fromDateTime=None):
         fundingRateFullPath = os.path.join(self.basicPath, self.fundingRatesFolder)
-        queue = Queue()
+        q = Queue()
 
         logger.info("Starting mergeFundingRates with fromDateTime: %s", fromDateTime)
 
@@ -519,27 +530,27 @@ class CSVMerger:
 
         for umFuturesTicker in UMFuturesTickers:
             if umFuturesTicker in downloadedFuturesTickers:
-                queue.put(umFuturesTicker)
+                q.put(umFuturesTicker)
                 logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
 
-        numThreads = 10
+        numThreads = 20
         logger.info("Starting %d threads to process the funding rates queue", numThreads)
 
         for i in range(numThreads):
             worker = Thread(target=self._merge1FundingRate,
-                            args=(queue,
+                            args=(q,
                                   fundingRateFullPath,
                                   fromDateTime))
             worker.start()
             logger.info("Started thread %d", i + 1)
 
-        queue.join()
+        q.join()
         logger.info("Completed merging funding rates.")
 
-    def _merge1FundingRate(self, queue, fundingRateFullPath, fromDateTime):
-        while queue.not_empty:
+    def _merge1FundingRate(self, q, fundingRateFullPath, fromDateTime):
+        while True:
             try:
-                ticker = queue.get_nowait()
+                ticker = q.get_nowait()
                 logger.info(f"Processing fundingRate for ticker: {ticker}")
                 try:
                     symbolId = self._getSymbolId(symbol=ticker, isSpot=0)
@@ -581,13 +592,19 @@ class CSVMerger:
                     logger.info(f"Data processed and stored for ticker: {ticker}")
                 except Exception as e:
                     logger.exception(f"Error while entering data into the database for ticker: {ticker}")
-            except:
-                logger.info("Queue is empty or an error occurred, worker shuts down")
+                finally:
+                    q.task_done()
+            except Empty:
+                # The queue is empty, exit the loop
+                logger.info("Queue is empty, worker shuts down")
+                break
+            except Exception as e:
+                logger.exception(f"An error occurred: {e}")
                 break
 
     def mergeMetrics(self, UMFuturesTickers, fromDateTime=None):
         metricsFullPath = os.path.join(self.basicPath, self.metricsFolder)
-        queue = Queue()
+        q = Queue()
 
         logger.info("Starting mergeMetrics with fromDateTime: %s", fromDateTime)
 
@@ -596,27 +613,27 @@ class CSVMerger:
 
         for umFuturesTicker in UMFuturesTickers:
             if umFuturesTicker in downloadedFuturesTickers:
-                queue.put(umFuturesTicker)
+                q.put(umFuturesTicker)
                 logger.info("Added UM Futures ticker %s to the queue", umFuturesTicker)
 
-        numThreads = 10
+        numThreads = 20
         logger.info("Starting %d threads to process the metrics queue", numThreads)
 
         for i in range(numThreads):
             worker = Thread(target=self._merge1Metrics,
-                            args=(queue,
+                            args=(q,
                                   metricsFullPath,
                                   fromDateTime))
             worker.start()
             logger.info("Started thread %d", i + 1)
 
-        queue.join()
+        q.join()
         logger.info("Completed merging metrics.")
 
-    def _merge1Metrics(self, queue, metricsFullPath, fromDateTime, timeframe="5m"):
-        while queue.not_empty:
+    def _merge1Metrics(self, q, metricsFullPath, fromDateTime, timeframe="5m"):
+        while True:
             try:
-                ticker = queue.get_nowait()
+                ticker = q.get_nowait()
                 logger.info(f"Processing metrics for ticker: {ticker}")
                 try:
                     symbolId = self._getSymbolId(symbol=ticker, isSpot=0)
@@ -688,8 +705,14 @@ class CSVMerger:
                     logger.info(f"Data processed and stored for ticker: {ticker}")
                 except Exception as e:
                     logger.exception(f"Error while entering data into the database for ticker: {ticker}")
-            except:
-                logger.info("Queue is empty or an error occurred, worker shuts down")
+                finally:
+                    q.task_done()
+            except Empty:
+                # The queue is empty, exit the loop
+                logger.info("Queue is empty, worker shuts down")
+                break
+            except Exception as e:
+                logger.exception(f"An error occurred: {e}")
                 break
 
 def loadTickersFromFile(path):
@@ -734,9 +757,25 @@ umFuturesTickers = loadTickersFromFile("umFuturesTickers.txt")
 
 csvMerger = CSVMerger(dataProcessor=dataProcessor)
 # csvMerger.mergePriceOHLCV(spotTickers=spotTickers, UMFuturesTickers=umFuturesTickers, timeframe="1m")
-csvMerger.mergePriceOHLCV(spotTickers=["BTCUSDT", "ETHUSDT"], UMFuturesTickers=["BTCUSDT", "ETHUSDT"], timeframe="1m")
-# csvMerger.mergeMetrics(UMFuturesTickers=umFuturesTickers)
-# csvMerger.mergeFundingRates(UMFuturesTickers=umFuturesTickers)
+
+from datetime import datetime
+timestart = datetime.now()
+csvMerger.mergePriceOHLCV(
+    # spotTickers=["BTCUSDT", "ETHUSDT"],
+    # UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
+    spotTickers=spotTickers,
+    UMFuturesTickers=umFuturesTickers,
+    timeframe="1m")
+
+# csvMerger.mergeMetrics(
+#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"],
+    # UMFuturesTickers=umFuturesTickers
+    #                     )
+# csvMerger.mergeFundingRates(
+#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
+#                             )
+timeend = datetime.now()
+print(f"Total time: {timeend-timestart}")
 
 
 #AssetGroup
