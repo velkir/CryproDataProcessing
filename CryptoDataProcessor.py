@@ -18,6 +18,7 @@ import time
 import random
 from sqlalchemy.exc import InternalError
 from mysql.connector.errors import InternalError as MySQLInternalError
+import tempfile
 
 class CryptoDataProcessor:
     def __init__(self, dbName):
@@ -98,8 +99,9 @@ class CryptoDataProcessor:
         max_retries = 5
         retry_count = 0
 
-        # Создаем временный CSV-файл
-        temp_csv_file = f"temp_{thread_name}_{table}.csv"
+        # Создаем временный CSV-файл в безопасном каталоге временных файлов
+        temp_dir = tempfile.gettempdir()
+        temp_csv_file = os.path.join(temp_dir, f"temp_{thread_name}_{table}.csv")
 
         # Убеждаемся, что индекс не записывается в CSV-файл
         df.to_csv(temp_csv_file, index=False, header=False)
@@ -109,7 +111,7 @@ class CryptoDataProcessor:
 
         # Получаем информацию о структуре таблицы из базы данных
         with self._engine.connect() as conn:
-            result = conn.execute(text(f"SHOW COLUMNS FROM {table}"))
+            result = conn.execute(text(f"SHOW COLUMNS FROM `{table}`"))
             table_columns_info = result.fetchall()
 
         # Создаем список столбцов таблицы и определяем автоинкрементные столбцы
@@ -124,10 +126,10 @@ class CryptoDataProcessor:
 
         # Исключаем автоинкрементные столбцы из списка столбцов для загрузки
         load_columns = [col for col in df_columns if col not in auto_increment_columns]
-        columns_str = ', '.join(load_columns)
+        columns_str = ', '.join([f"`{col}`" for col in load_columns])  # Оборачиваем имена столбцов в обратные кавычки
 
         # Создаем SET выражения для автоинкрементных столбцов
-        set_expressions = ', '.join([f"{col} = NULL" for col in auto_increment_columns])
+        set_expressions = ', '.join([f"`{col}` = NULL" for col in auto_increment_columns])  # Оборачиваем имена столбцов
 
         while retry_count <= max_retries:
             try:
@@ -139,10 +141,10 @@ class CryptoDataProcessor:
                     if if_exists == 'replace':
                         logger.info(f"Thread {thread_name}: Replacing data in table {table}")
                         # Очищаем таблицу перед загрузкой данных
-                        conn.execute(text(f"TRUNCATE TABLE {table}"))
+                        conn.execute(text(f"TRUNCATE TABLE `{table}`"))
                     elif if_exists == 'fail':
                         # Проверяем, есть ли данные в таблице
-                        result = conn.execute(text(f"SELECT 1 FROM {table} LIMIT 1")).fetchone()
+                        result = conn.execute(text(f"SELECT 1 FROM `{table}` LIMIT 1")).fetchone()
                         if result:
                             logger.error(
                                 f"Thread {thread_name}: Table {table} already contains data. Aborting due to if_exists='fail'.")
@@ -150,10 +152,13 @@ class CryptoDataProcessor:
                             os.remove(temp_csv_file)
                             raise Exception(f"Table {table} already contains data. Aborting due to if_exists='fail'.")
 
+                    # Преобразуем путь к файлу для MySQL
+                    mysql_compatible_path = temp_csv_file.replace('\\', '/')
+
                     # Загружаем данные с помощью LOAD DATA LOCAL INFILE, указывая столбцы
                     load_sql = f"""
-                        LOAD DATA LOCAL INFILE '{os.path.abspath(temp_csv_file)}'
-                        INTO TABLE {table}
+                        LOAD DATA LOCAL INFILE '{mysql_compatible_path}'
+                        INTO TABLE `{table}`
                         FIELDS TERMINATED BY ',' 
                         LINES TERMINATED BY '\\n'
                         ({columns_str})
@@ -967,22 +972,22 @@ csvMerger = CSVMerger(dataProcessor=dataProcessor)
 from datetime import datetime
 timestart = datetime.now()
 
-# csvMerger.mergePriceOHLCV(
-#     # spotTickers=['AERGOUSDT', 'AEURUSDT', 'AEVOUSDT', 'AGLDUSDT', 'AIUSDT', 'AKROUSDT', 'ALCXUSDT', 'ALGOUSDT',
-#     #              'ALICEUSDT', 'ALPACAUSDT', 'ALPHAUSDT', 'ALPINEUSDT', 'ALTUSDT', 'AMBUSDT', 'AMPUSDT'],
-#         spotTickers=["BTCUSDT", "ETHUSDT"],
-#         UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
-#     # spotTickers=spotTickers,
-#     # UMFuturesTickers=umFuturesTickers,
-#     timeframe="1m")
-csvMerger.mergeMetrics(
-    UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
-    # UMFuturesTickers=umFuturesTickers
-                        )
-csvMerger.mergeFundingRates(
-    UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"])
-timeend = datetime.now()
-print(f"Total time: {timeend-timestart}")
+csvMerger.mergePriceOHLCV(
+    # spotTickers=['AERGOUSDT', 'AEURUSDT', 'AEVOUSDT', 'AGLDUSDT', 'AIUSDT', 'AKROUSDT', 'ALCXUSDT', 'ALGOUSDT',
+    #              'ALICEUSDT', 'ALPACAUSDT', 'ALPHAUSDT', 'ALPINEUSDT', 'ALTUSDT', 'AMBUSDT', 'AMPUSDT'],
+        spotTickers=["BTCUSDT", "ETHUSDT"],
+        UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
+    # spotTickers=spotTickers,
+    # UMFuturesTickers=umFuturesTickers,
+    timeframe="1m")
+# csvMerger.mergeMetrics(
+#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
+#     # UMFuturesTickers=umFuturesTickers
+#                         )
+# csvMerger.mergeFundingRates(
+#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"])
+# timeend = datetime.now()
+# print(f"Total time: {timeend-timestart}")
 
 
 #AssetGroup

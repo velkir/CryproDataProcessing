@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="6b54a282-d85d-4ede-93af-c4cf8bb4f1dd" name="Changes" comment="Added multiconnections to db through select_pandas_query()">
+    <list default="true" id="6b54a282-d85d-4ede-93af-c4cf8bb4f1dd" name="Changes" comment="Optimized loading data to DB (_modify_query_pandas)">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/CryptoDataProcessor.py" beforeDir="false" afterPath="$PROJECT_DIR$/CryptoDataProcessor.py" afterDir="false" />
     </list>
@@ -86,13 +86,22 @@
       <option name="project" value="LOCAL" />
       <updated>1728547626449</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Optimized loading data to DB (_modify_query_pandas)">
+      <option name="closed" value="true" />
+      <created>1728560104338</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1728560104338</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Fixed concurrency bug getting symbolId from DB" />
     <MESSAGE value="Added logging to console&amp;file" />
     <MESSAGE value="Added multiconnections to db through select_pandas_query()" />
-    <option name="LAST_COMMIT_MESSAGE" value="Added multiconnections to db through select_pandas_query()" />
+    <MESSAGE value="Optimized loading data to DB (_modify_query_pandas)" />
+    <option name="LAST_COMMIT_MESSAGE" value="Optimized loading data to DB (_modify_query_pandas)" />
   </component>
 </project>
