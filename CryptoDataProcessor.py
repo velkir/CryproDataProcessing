@@ -14,6 +14,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import sys
 import warnings
+import time
+import random
+from sqlalchemy.exc import InternalError
+from mysql.connector.errors import InternalError as MySQLInternalError
 
 class CryptoDataProcessor:
     def __init__(self, dbName):
@@ -34,7 +38,13 @@ class CryptoDataProcessor:
     def _initialize_db_connection(self, dbName):
         logger.info("Initializing database connection to %s", dbName)
         connection_string = f"mysql+mysqlconnector://user:1234@localhost:3306/{dbName}"
-        engine = create_engine(connection_string, echo=False)
+        engine = create_engine(
+            connection_string,
+            echo=False,
+            connect_args={
+                'allow_local_infile': True  # Включаем загрузку локальных файлов на стороне клиента
+            }
+        )
         logger.info("Database connection established.")
         return engine
 
@@ -73,23 +83,140 @@ class CryptoDataProcessor:
         except Exception as e:
             logger.exception(f"Thread {thread_name}: An error occurred during pandas select query execution: {e}")
 
-    def _modify_query_pandas(self, df, table, if_exists='append', index=False, method="multi", chunksize=500):
+    import os
+    import time
+    import random
+    from sqlalchemy.exc import InternalError
+    from mysql.connector.errors import InternalError as MySQLInternalError
+
+    def _modify_query_pandas(self, df, table, if_exists='append', index=False):
         thread_name = threading.current_thread().name
-        logger.info(f"Thread {thread_name}: Executing pandas modify query on table {table}")
-        try:
-            with self._engine.connect() as conn:
-                result = df.to_sql(
-                    name=table,
-                    con=conn,
-                    if_exists=if_exists,
-                    index=index,
-                    method=method,
-                    chunksize=chunksize
-                )
-                logger.info(f"Thread {thread_name}: Pandas modify query executed successfully.")
-                return result
-        except Exception as e:
-            logger.exception(f"Thread {thread_name}: An error occurred during pandas modify query execution: {e}")
+        logger.info(
+            f"Thread {thread_name}: Executing optimized modify query on table {table} with if_exists='{if_exists}'")
+
+        # Максимальное количество повторных попыток
+        max_retries = 5
+        retry_count = 0
+
+        # Создаем временный CSV-файл
+        temp_csv_file = f"temp_{thread_name}_{table}.csv"
+
+        # Убеждаемся, что индекс не записывается в CSV-файл
+        df.to_csv(temp_csv_file, index=False, header=False)
+
+        # Получаем список столбцов DataFrame
+        df_columns = df.columns.tolist()
+
+        # Получаем информацию о структуре таблицы из базы данных
+        with self._engine.connect() as conn:
+            result = conn.execute(text(f"SHOW COLUMNS FROM {table}"))
+            table_columns_info = result.fetchall()
+
+        # Создаем список столбцов таблицы и определяем автоинкрементные столбцы
+        table_columns = []
+        auto_increment_columns = []
+        for column_info in table_columns_info:
+            column_name = column_info[0]
+            extra = column_info[5]  # Поле 'Extra' в результате SHOW COLUMNS
+            table_columns.append(column_name)
+            if 'auto_increment' in extra:
+                auto_increment_columns.append(column_name)
+
+        # Исключаем автоинкрементные столбцы из списка столбцов для загрузки
+        load_columns = [col for col in df_columns if col not in auto_increment_columns]
+        columns_str = ', '.join(load_columns)
+
+        # Создаем SET выражения для автоинкрементных столбцов
+        set_expressions = ', '.join([f"{col} = NULL" for col in auto_increment_columns])
+
+        while retry_count <= max_retries:
+            try:
+                with self._engine.connect() as conn:
+                    # Отключаем проверки внешних ключей и автокоммит
+                    conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+                    conn.execute(text("SET AUTOCOMMIT = 0"))
+
+                    if if_exists == 'replace':
+                        logger.info(f"Thread {thread_name}: Replacing data in table {table}")
+                        # Очищаем таблицу перед загрузкой данных
+                        conn.execute(text(f"TRUNCATE TABLE {table}"))
+                    elif if_exists == 'fail':
+                        # Проверяем, есть ли данные в таблице
+                        result = conn.execute(text(f"SELECT 1 FROM {table} LIMIT 1")).fetchone()
+                        if result:
+                            logger.error(
+                                f"Thread {thread_name}: Table {table} already contains data. Aborting due to if_exists='fail'.")
+                            # Удаляем временный CSV-файл
+                            os.remove(temp_csv_file)
+                            raise Exception(f"Table {table} already contains data. Aborting due to if_exists='fail'.")
+
+                    # Загружаем данные с помощью LOAD DATA LOCAL INFILE, указывая столбцы
+                    load_sql = f"""
+                        LOAD DATA LOCAL INFILE '{os.path.abspath(temp_csv_file)}'
+                        INTO TABLE {table}
+                        FIELDS TERMINATED BY ',' 
+                        LINES TERMINATED BY '\\n'
+                        ({columns_str})
+                    """
+
+                    # Добавляем SET выражения для автоинкрементных столбцов
+                    if set_expressions:
+                        load_sql += f" SET {set_expressions};"
+                    else:
+                        load_sql += ";"
+
+                    conn.execute(text(load_sql).execution_options(autocommit=True))
+
+                    # Включаем проверки внешних ключей и автокоммит
+                    conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+                    conn.execute(text("COMMIT"))
+                    conn.execute(text("SET AUTOCOMMIT = 1"))
+
+                # Удаляем временный CSV-файл
+                os.remove(temp_csv_file)
+                logger.info(f"Thread {thread_name}: Data loaded successfully using LOAD DATA INFILE.")
+                break  # Если успешно, выходим из цикла
+            except (InternalError, MySQLInternalError) as e:
+                if '1213' in str(e):
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        logger.error(f"Thread {thread_name}: Max retries exceeded. Could not resolve deadlock.")
+                        # Удаляем временный CSV-файл
+                        os.remove(temp_csv_file)
+                        raise
+                    wait_time = random.uniform(0.5, 2.0)
+                    logger.warning(
+                        f"Thread {thread_name}: Deadlock detected. Retrying {retry_count}/{max_retries} after {wait_time:.2f} seconds.")
+                    time.sleep(wait_time)
+                else:
+                    logger.exception(
+                        f"Thread {thread_name}: An error occurred during optimized modify query execution: {e}")
+                    # Удаляем временный CSV-файл
+                    os.remove(temp_csv_file)
+                    raise
+            except Exception as e:
+                logger.exception(f"Thread {thread_name}: An unexpected error occurred: {e}")
+                # Удаляем временный CSV-файл
+                os.remove(temp_csv_file)
+                raise
+
+    # def _modify_query_pandas(self, df, table, if_exists='append', index=False, method="multi", chunksize=50000):
+    #     thread_name = threading.current_thread().name
+    #     logger.info(f"Thread {thread_name}: Executing pandas modify query on table {table}")
+    #     try:
+    #         with self._engine.connect() as conn:
+    #             result = df.to_sql(
+    #                 name=table,
+    #                 con=conn,
+    #                 if_exists=if_exists,
+    #                 index=index,
+    #                 method=method,
+    #                 chunksize=chunksize
+    #             )
+    #             logger.info(f"Thread {thread_name}: Pandas modify query executed successfully.")
+    #             return result
+    #     except Exception as e:
+    #         logger.exception(f"Thread {thread_name}: An error occurred during pandas modify query execution: {e}")
 
     def _register_event(self):
         logger.info("Registering database event for fast executemany.")
@@ -840,20 +967,20 @@ csvMerger = CSVMerger(dataProcessor=dataProcessor)
 from datetime import datetime
 timestart = datetime.now()
 
-csvMerger.mergePriceOHLCV(
-    # spotTickers=['AERGOUSDT', 'AEURUSDT', 'AEVOUSDT', 'AGLDUSDT', 'AIUSDT', 'AKROUSDT', 'ALCXUSDT', 'ALGOUSDT',
-    #              'ALICEUSDT', 'ALPACAUSDT', 'ALPHAUSDT', 'ALPINEUSDT', 'ALTUSDT', 'AMBUSDT', 'AMPUSDT'],
-        spotTickers=["BTCUSDT", "ETHUSDT"],
-        UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
-    # spotTickers=spotTickers,
-    # UMFuturesTickers=umFuturesTickers,
-    timeframe="1m")
-# csvMerger.mergeMetrics(
-#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
-#     # UMFuturesTickers=umFuturesTickers
-#                         )
-# csvMerger.mergeFundingRates(
-#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"])
+# csvMerger.mergePriceOHLCV(
+#     # spotTickers=['AERGOUSDT', 'AEURUSDT', 'AEVOUSDT', 'AGLDUSDT', 'AIUSDT', 'AKROUSDT', 'ALCXUSDT', 'ALGOUSDT',
+#     #              'ALICEUSDT', 'ALPACAUSDT', 'ALPHAUSDT', 'ALPINEUSDT', 'ALTUSDT', 'AMBUSDT', 'AMPUSDT'],
+#         spotTickers=["BTCUSDT", "ETHUSDT"],
+#         UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
+#     # spotTickers=spotTickers,
+#     # UMFuturesTickers=umFuturesTickers,
+#     timeframe="1m")
+csvMerger.mergeMetrics(
+    UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
+    # UMFuturesTickers=umFuturesTickers
+                        )
+csvMerger.mergeFundingRates(
+    UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"])
 timeend = datetime.now()
 print(f"Total time: {timeend-timestart}")
 
