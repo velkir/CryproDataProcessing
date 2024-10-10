@@ -77,16 +77,17 @@ class CryptoDataProcessor:
         thread_name = threading.current_thread().name
         logger.info(f"Thread {thread_name}: Executing pandas modify query on table {table}")
         try:
-            result = df.to_sql(
-                name=table,
-                con=self._engine,
-                if_exists=if_exists,
-                index=index,
-                method=method,
-                chunksize=chunksize
-            )
-            logger.info(f"Thread {thread_name}: Pandas modify query executed successfully.")
-            return result
+            with self._engine.connect() as conn:
+                result = df.to_sql(
+                    name=table,
+                    con=conn,
+                    if_exists=if_exists,
+                    index=index,
+                    method=method,
+                    chunksize=chunksize
+                )
+                logger.info(f"Thread {thread_name}: Pandas modify query executed successfully.")
+                return result
         except Exception as e:
             logger.exception(f"Thread {thread_name}: An error occurred during pandas modify query execution: {e}")
 
@@ -418,7 +419,7 @@ class Ticker:
     def addTickers(self, dfNewTickers):
         logger.info("Adding new tickers to database.")
         return self.dataProcessor._modify_query_pandas(dfNewTickers, "Ticker", if_exists='append', index=False,
-                                                       method="multi", chunksize=1)
+                                                       method="multi", chunksize=50)
 
 class TickerGroup:
     def __init__(self, dataProcessor):
@@ -513,7 +514,7 @@ class CSVMerger:
             tasks.extend([(umFuturesTicker, umFuturesPath, 0) for umFuturesTicker in UMFuturesTickers if
                           umFuturesTicker in downloadedFuturesTickers])
 
-        numThreads = 20
+        numThreads = 30
         logger.info(f"Starting {numThreads} threads to process the tasks")
 
         with ThreadPoolExecutor(max_workers=numThreads) as executor:
@@ -620,7 +621,7 @@ class CSVMerger:
 
         tasks.extend([ticker for ticker in UMFuturesTickers if ticker in downloadedFuturesTickers])
 
-        numThreads = 20
+        numThreads = 30
         logger.info(f"Starting {numThreads} threads to process the funding rates")
 
         with ThreadPoolExecutor(max_workers=numThreads) as executor:
@@ -693,7 +694,7 @@ class CSVMerger:
 
         tasks.extend([ticker for ticker in UMFuturesTickers if ticker in downloadedFuturesTickers])
 
-        numThreads = 20
+        numThreads = 30
         logger.info(f"Starting {numThreads} threads to process the metrics")
 
         with ThreadPoolExecutor(max_workers=numThreads) as executor:
@@ -839,18 +840,20 @@ csvMerger = CSVMerger(dataProcessor=dataProcessor)
 from datetime import datetime
 timestart = datetime.now()
 
-# csvMerger.mergePriceOHLCV(
-#     spotTickers=["BTCUSDT", "ETHUSDT"],
-#     UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
-#     # spotTickers=spotTickers,
-#     # UMFuturesTickers=umFuturesTickers,
-#     timeframe="1h")
-csvMerger.mergeMetrics(
-    UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
-    # UMFuturesTickers=umFuturesTickers
-                        )
-csvMerger.mergeFundingRates(
-    UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"])
+csvMerger.mergePriceOHLCV(
+    # spotTickers=['AERGOUSDT', 'AEURUSDT', 'AEVOUSDT', 'AGLDUSDT', 'AIUSDT', 'AKROUSDT', 'ALCXUSDT', 'ALGOUSDT',
+    #              'ALICEUSDT', 'ALPACAUSDT', 'ALPHAUSDT', 'ALPINEUSDT', 'ALTUSDT', 'AMBUSDT', 'AMPUSDT'],
+        spotTickers=["BTCUSDT", "ETHUSDT"],
+        UMFuturesTickers=["BTCUSDT", "ETHUSDT"],
+    # spotTickers=spotTickers,
+    # UMFuturesTickers=umFuturesTickers,
+    timeframe="1m")
+# csvMerger.mergeMetrics(
+#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"]
+#     # UMFuturesTickers=umFuturesTickers
+#                         )
+# csvMerger.mergeFundingRates(
+#     UMFuturesTickers=["DOGEUSDT", "EOSUSDT", "TRXUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "ETHUSDT"])
 timeend = datetime.now()
 print(f"Total time: {timeend-timestart}")
 

@@ -251,9 +251,10 @@ logger.addHandler(file_handler)
 
 dumper = BinanceDataDumper(
     # spotTickers=["BTCUSDT", "ETHUSDT"],
-    umFuturesTickers=["DOGEUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "TRXUSDT", "EOSUSDT", "PROMUSDT"],
+    spotTickers=['AERGOUSDT','AEURUSDT','AEVOUSDT','AGLDUSDT','AIUSDT','AKROUSDT','ALCXUSDT','ALGOUSDT','ALICEUSDT','ALPACAUSDT','ALPHAUSDT','ALPINEUSDT','ALTUSDT','AMBUSDT','AMPUSDT'],
+    # umFuturesTickers=["DOGEUSDT", "1000PEPEUSDT", "1000SHIBUSDT", "TRXUSDT", "EOSUSDT", "PROMUSDT"],
     # dataTypes=["klines", "fundingRate", "metrics"],
-    dataTypes=["metrics", "fundingRate"],
+    dataTypes=["klines"],
     timeframes=["4h"]
     # timeframes=["1m"]
 )
