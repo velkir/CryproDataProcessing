@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/CryptoDataProcessor.iml" filepath="$PROJECT_DIR$/.idea/CryptoDataProcessor.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/CryptoDataProcessor_2.0.iml" filepath="$PROJECT_DIR$/.idea/CryptoDataProcessor_2.0.iml" />
     </modules>
   </component>
 </project>
